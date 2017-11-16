@@ -34,6 +34,7 @@ import (
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/events"
+	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/shell"
 	"github.com/gravitational/teleport/lib/utils"
 
@@ -75,11 +76,24 @@ type Exec interface {
 }
 
 // NewExecRequest creates a new local or remote Exec.
-func NewExecRequest(ctx *ServerContext, command string) Exec {
+func NewExecRequest(ctx *ServerContext, command string) (Exec, error) {
+	clusterConfig, err := ctx.srv.GetAccessPoint().GetClusterConfig()
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if clusterConfig.GetSessionRecording() == services.RecordAtProxy {
+		return &remoteExec{
+			ctx:     ctx,
+			command: command,
+			session: ctx.RemoteSession,
+		}, nil
+	}
+
 	return &LocalExecRequest{
 		Ctx:     ctx,
 		Command: command,
-	}
+	}, nil
 }
 
 // LocalExecRequest prepares the response to a 'exec' SSH request, i.e. executing
@@ -243,7 +257,7 @@ func prepareCommand(ctx *ServerContext) (*exec.Cmd, error) {
 	// is not set, fall back to the hostname of the first proxy we get back.
 	proxyHost := "<proxyhost>:3080"
 	if ctx.srv != nil {
-		proxies, err := ctx.srv.GetAuthService().GetProxies()
+		proxies, err := ctx.srv.GetAccessPoint().GetProxies()
 		if err != nil {
 			log.Errorf("Unexpected response from authService.GetProxies(): %v", err)
 		}
@@ -261,7 +275,7 @@ func prepareCommand(ctx *ServerContext) (*exec.Cmd, error) {
 	// https://github.com/openssh/openssh-portable/blob/master/session.c
 	c := exec.Command(shell, "-c", ctx.ExecRequest.GetCommand())
 
-	clusterName, err := ctx.srv.GetAuthService().GetDomainName()
+	clusterName, err := ctx.srv.GetAccessPoint().GetDomainName()
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -375,19 +389,52 @@ func (e *LocalExecRequest) parseSecureCopy() error {
 	return nil
 }
 
-func collectLocalStatus(cmd *exec.Cmd, err error) (*ExecResult, error) {
+type remoteExec struct {
+	command string
+	session *ssh.Session
+	ctx     *ServerContext
+}
+
+func (e *remoteExec) GetCommand() string {
+	return e.command
+}
+
+func (e *remoteExec) SetCommand(command string) {
+	e.command = command
+}
+
+func (r *remoteExec) Start(ch ssh.Channel) (*ExecResult, error) {
+	r.session.Stdout = ch
+	r.session.Stderr = ch.Stderr()
+
+	inputWriter, err := r.session.StdinPipe()
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			status := exitErr.Sys().(syscall.WaitStatus)
-			return &ExecResult{Code: status.ExitStatus(), Command: cmd.Path}, nil
-		}
-		return nil, err
+		return nil, trace.Wrap(err)
 	}
-	status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus)
-	if !ok {
-		return nil, fmt.Errorf("unknown exit status: %T(%v)", cmd.ProcessState.Sys(), cmd.ProcessState.Sys())
+	go func() {
+		io.Copy(inputWriter, ch)
+		inputWriter.Close()
+	}()
+
+	err = r.session.Start(r.command)
+	if err != nil {
+		return nil, trace.Wrap(err)
 	}
-	return &ExecResult{Code: status.ExitStatus(), Command: cmd.Path}, nil
+
+	return nil, nil
+}
+
+func (r *remoteExec) Wait() (*ExecResult, error) {
+	// block until the remote command has finished execution
+	err := r.session.Wait()
+
+	// figure out if the command successfully exited or if it exited in failure
+	execResult, err := r.collectRemoteStatus(err)
+
+	// emit the result of execution to the audit log
+	emitExecAuditEvent(r.ctx, r.command, execResult, err)
+
+	return execResult, trace.Wrap(err)
 }
 
 func emitExecAuditEvent(ctx *ServerContext, cmd string, status *ExecResult, err error) {
@@ -412,6 +459,42 @@ func emitExecAuditEvent(ctx *ServerContext, cmd string, status *ExecResult, err 
 		}
 	}
 	auditLog.EmitAuditEvent(events.ExecEvent, fields)
+}
+
+func collectLocalStatus(cmd *exec.Cmd, err error) (*ExecResult, error) {
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			status := exitErr.Sys().(syscall.WaitStatus)
+			return &ExecResult{Code: status.ExitStatus(), Command: cmd.Path}, nil
+		}
+		return nil, err
+	}
+	status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus)
+	if !ok {
+		return nil, fmt.Errorf("unknown exit status: %T(%v)", cmd.ProcessState.Sys(), cmd.ProcessState.Sys())
+	}
+	return &ExecResult{Code: status.ExitStatus(), Command: cmd.Path}, nil
+}
+
+func (r *remoteExec) collectRemoteStatus(err error) (*ExecResult, error) {
+	if err != nil {
+		if exitErr, ok := err.(*ssh.ExitError); ok {
+			return &ExecResult{
+				Code:    exitErr.ExitStatus(),
+				Command: r.GetCommand(),
+			}, err
+		}
+
+		return &ExecResult{
+			Code:    teleport.RemoteCommandFailure,
+			Command: r.GetCommand(),
+		}, err
+	}
+
+	return &ExecResult{
+		Code:    teleport.RemoteCommandSuccess,
+		Command: r.GetCommand(),
+	}, nil
 }
 
 // getDefaultEnvPath returns the default value of PATH environment variable for

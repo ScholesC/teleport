@@ -81,17 +81,33 @@ type SubsystemReq struct {
 	Name string
 }
 
+// SessionEnvVar is environment variable for SSH session
+const SessionEnvVar = "TELEPORT_SESSION"
+
 const (
-	// SessionEnvVar is environment variable for SSH session
-	SessionEnvVar = "TELEPORT_SESSION"
-	// SetEnvReq sets environment requests
-	SetEnvReq = "env"
-	// WindowChangeReq is a request to change window
-	WindowChangeReq = "window-change"
-	// PTYReq is a request for PTY
-	PTYReq = "pty-req"
-	// AgentReq is ssh agent requesst
-	AgentReq = "auth-agent-req@openssh.com"
+	// ExecRequest is a request to run a command.
+	ExecRequest = "exec"
+
+	// ShellRequest is a request for a shell.
+	ShellRequest = "shell"
+
+	// EnvRequest is a request to set an environment variable.
+	EnvRequest = "env"
+
+	// SubsystemRequest is a request to run a subsystem.
+	SubsystemRequest = "subsystem"
+
+	// WindowChangeRequest is a request to change window.
+	WindowChangeRequest = "window-change"
+
+	// PTYRequest is a request for PTY.
+	PTYRequest = "pty-req"
+
+	// AgentForwardRequest is SSH agent request.
+	AgentForwardRequest = "auth-agent-req@openssh.com"
+
+	// AuthAgentRequest is a request to a SSH client to open an agent channel.
+	AuthAgentRequest = "auth-agent@openssh.com"
 )
 
 const (

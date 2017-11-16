@@ -55,14 +55,14 @@ type Server interface {
 	// startup is allowed.
 	PermitUserEnvironment() bool
 
-	// EmitAuditEvent an Audit Event from this server.
+	// EmitAuditEvent emits an Audit Event to the Auth Server.
 	EmitAuditEvent(string, events.EventFields)
 
-	// GetAuditLog returns the Audit Log for this server.
+	// GetAuditLog returns the Audit Log for this cluster.
 	GetAuditLog() events.IAuditLog
 
-	// GetAuthService returns an auth.AccessPoint for this server.
-	GetAuthService() auth.AccessPoint
+	// GetAccessPoint returns an auth.AccessPoint for this cluster.
+	GetAccessPoint() auth.AccessPoint
 
 	// GetSessionServer returns a session server.
 	GetSessionServer() rsession.Service
@@ -132,6 +132,14 @@ type ServerContext struct {
 	// Certificate is the SSH user certificate bytes marshalled in the OpenSSH
 	// authorized_keys format.
 	Certificate []byte
+
+	// RemoteClient holds a SSH client to a remote server. Only used by the
+	// recording proxy.
+	RemoteClient *ssh.Client
+
+	// RemoteSession holds a SSH session to a remote server. Only used by the
+	// recording proxy.
+	RemoteSession *ssh.Session
 }
 
 // NewServerContext creates a new *ServerContext which is used to pass and
@@ -161,6 +169,10 @@ func NewServerContext(srv Server, conn *ssh.ServerConn) *ServerContext {
 		},
 	})
 	return ctx
+}
+
+func (c *ServerContext) GetServer() Server {
+	return c.srv
 }
 
 // GetCertificate parses the SSH certificate bytes and returns a *ssh.Certificate.

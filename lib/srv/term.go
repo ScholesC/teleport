@@ -25,6 +25,8 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/gravitational/teleport"
+	"github.com/gravitational/teleport/lib/services"
 	rsession "github.com/gravitational/teleport/lib/session"
 	"github.com/gravitational/teleport/lib/sshutils"
 
@@ -77,13 +79,24 @@ type Terminal interface {
 // NewTerminal returns a new terminal. Terminal can be local or remote
 // depending on cluster configuration.
 func NewTerminal(ctx *ServerContext) (Terminal, error) {
-	return NewLocalTerminal(ctx)
+	clusterConfig, err := ctx.srv.GetAccessPoint().GetClusterConfig()
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if clusterConfig.GetSessionRecording() == services.RecordAtProxy {
+		return newRemoteTerminal(ctx)
+	}
+
+	return newLocalTerminal(ctx)
 }
 
 // terminal is a local PTY created by Teleport nodes.
 type terminal struct {
 	wg sync.WaitGroup
 	mu sync.Mutex
+
+	log *log.Entry
 
 	cmd *exec.Cmd
 	ctx *ServerContext
@@ -95,13 +108,16 @@ type terminal struct {
 }
 
 // NewLocalTerminal creates and returns a local PTY.
-func NewLocalTerminal(ctx *ServerContext) (*terminal, error) {
+func newLocalTerminal(ctx *ServerContext) (*terminal, error) {
 	pty, tty, err := pty.Open()
 	if err != nil {
-		log.Warnf("could not start pty (%s)", err)
+		log.Warnf("Could not start PTY %v", err)
 		return nil, err
 	}
 	return &terminal{
+		log: log.WithFields(log.Fields{
+			trace.Component: teleport.ComponentLocalTerm,
+		}),
 		ctx: ctx,
 		pty: pty,
 		tty: tty,
@@ -199,7 +215,7 @@ func (t *terminal) Close() error {
 
 func (t *terminal) closeTTY() {
 	if err := t.tty.Close(); err != nil {
-		log.Warnf("failed to close TTY: %v", err)
+		t.log.Warnf("Failed to close TTY: %v", err)
 	}
 	t.tty = nil
 }
@@ -207,7 +223,7 @@ func (t *terminal) closeTTY() {
 func (t *terminal) closePTY() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	defer log.Debugf("PTY is closed")
+	defer t.log.Debugf("Closed PTY")
 
 	// wait until all copying is over (all participants have left)
 	t.wg.Wait()
@@ -254,16 +270,221 @@ func (t *terminal) GetTerminalParams() rsession.TerminalParams {
 
 // SetTermType sets the terminal type from "req-pty" request.
 func (t *terminal) SetTermType(term string) {
-	if term == "" {
-		term = defaultTerm
-	}
 	t.cmd.Env = append(t.cmd.Env, "TERM="+term)
+}
+
+type remoteTerminal struct {
+	wg sync.WaitGroup
+	mu sync.Mutex
+
+	log *log.Entry
+
+	ctx *ServerContext
+
+	session   *ssh.Session
+	params    rsession.TerminalParams
+	ptyBuffer *ptyBuffer
+	termType  string
+}
+
+func newRemoteTerminal(ctx *ServerContext) (*remoteTerminal, error) {
+	t := &remoteTerminal{
+		log: log.WithFields(log.Fields{
+			trace.Component: teleport.ComponentRemoteTerm,
+		}),
+		ctx:       ctx,
+		session:   ctx.RemoteSession,
+		ptyBuffer: &ptyBuffer{},
+	}
+
+	return t, nil
+}
+
+func (t *remoteTerminal) AddParty(delta int) {
+	t.wg.Add(delta)
+}
+
+type ptyBuffer struct {
+	r io.Reader
+	w io.Writer
+}
+
+func (b *ptyBuffer) Read(p []byte) (n int, err error) {
+	return b.r.Read(p)
+}
+
+func (b *ptyBuffer) Write(p []byte) (n int, err error) {
+	return b.w.Write(p)
+}
+
+func (t *remoteTerminal) Run() error {
+	// prepare the remote remote session by setting environment variables
+	t.prepareRemoteSession(t.session, t.ctx)
+
+	// combine stdout and stderr
+	stdout, err := t.session.StdoutPipe()
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	t.session.Stderr = t.session.Stdout
+	stdin, err := t.session.StdinPipe()
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	// create a pty buffer that stdin and stdout are hooked up to
+	t.ptyBuffer = &ptyBuffer{
+		r: stdout,
+		w: stdin,
+	}
+
+	// if a specific term type was not requested, then pick the default one and request a pty
+	if t.termType == "" {
+		t.termType = defaultTerm
+	}
+	if err := t.session.RequestPty(t.termType, t.params.W, t.params.H, ssh.TerminalModes{}); err != nil {
+		return trace.Wrap(err)
+	}
+
+	// we want to run a "exec" command within a pty
+	if t.ctx.ExecRequest.GetCommand() != "" {
+		t.log.Debugf("Running exec request within a PTY")
+
+		if err := t.session.Start(t.ctx.ExecRequest.GetCommand()); err != nil {
+			return trace.Wrap(err)
+		}
+
+		return nil
+	}
+
+	// we want an interactive shell
+	t.log.Debugf("Requesting an interactive terminal of type %v", t.termType)
+	if err := t.session.Shell(); err != nil {
+		return trace.Wrap(err)
+	}
+	return nil
+}
+
+func (t *remoteTerminal) Wait() (*ExecResult, error) {
+	err := t.session.Wait()
+	if err != nil {
+		if exitErr, ok := err.(*ssh.ExitError); ok {
+			return &ExecResult{
+				Code:    exitErr.ExitStatus(),
+				Command: t.ctx.ExecRequest.GetCommand(),
+			}, err
+		}
+
+		return &ExecResult{
+			Code:    teleport.RemoteCommandFailure,
+			Command: t.ctx.ExecRequest.GetCommand(),
+		}, err
+	}
+
+	return &ExecResult{
+		Code:    teleport.RemoteCommandSuccess,
+		Command: t.ctx.ExecRequest.GetCommand(),
+	}, nil
+}
+
+func (t *remoteTerminal) Kill() error {
+	err := t.session.Signal(ssh.SIGKILL)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	return nil
+}
+
+func (t *remoteTerminal) PTY() io.ReadWriter {
+	return t.ptyBuffer
+}
+
+func (t *remoteTerminal) TTY() *os.File {
+	return nil
+}
+
+func (t *remoteTerminal) Close() error {
+	// wait until all participants are done copying
+	t.wg.Wait()
+
+	err := t.session.Close()
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	return nil
+}
+
+func (t *remoteTerminal) GetWinSize() (*term.Winsize, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	return t.params.Winsize(), nil
+}
+
+func (t *remoteTerminal) SetWinSize(params rsession.TerminalParams) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	err := t.windowChange(params.W, params.H)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	t.params = params
+
+	return nil
+}
+
+func (t *remoteTerminal) GetTerminalParams() rsession.TerminalParams {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	return t.params
+}
+
+func (t *remoteTerminal) SetTermType(term string) {
+	t.termType = term
+}
+
+func (t *remoteTerminal) windowChange(w int, h int) error {
+	type windowChangeRequest struct {
+		W   uint32
+		H   uint32
+		Wpx uint32
+		Hpx uint32
+	}
+	req := windowChangeRequest{
+		W:   uint32(w),
+		H:   uint32(h),
+		Wpx: uint32(w * 8),
+		Hpx: uint32(h * 8),
+	}
+	_, err := t.session.SendRequest("window-change", false, ssh.Marshal(&req))
+	return err
+}
+
+// prepareRemoteSession prepares the more session for execution.
+func (t *remoteTerminal) prepareRemoteSession(session *ssh.Session, ctx *ServerContext) {
+	envs := map[string]string{
+		teleport.SSHTeleportUser: ctx.TeleportUser,
+		//teleport.SSHSessionWebproxyAddr: proxyHost,
+		teleport.SSHTeleportHostUUID:    ctx.srv.ID(),
+		teleport.SSHTeleportClusterName: ctx.ClusterName,
+		teleport.SSHSessionID:           string(ctx.session.id),
+	}
+
+	for k, v := range envs {
+		if err := session.Setenv(k, v); err != nil {
+			t.log.Debugf("Unable to set environment variable: %v: %v", k, v)
+		}
+	}
 }
 
 func ParsePTYReq(req *ssh.Request) (*sshutils.PTYReqParams, error) {
 	var r sshutils.PTYReqParams
 	if err := ssh.Unmarshal(req.Payload, &r); err != nil {
-		log.Warnf("failed to parse PTY request: %v", err)
+		log.Warnf("Failed to parse PTY request: %v", err)
 		return nil, err
 	}
 

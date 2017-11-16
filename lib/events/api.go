@@ -86,6 +86,11 @@ const (
 	ExecEventCode    = "exitCode"
 	ExecEventError   = "exitError"
 
+	// SubsystemEvent is the result of the execution of a subsystem.
+	SubsystemEvent = "subsystem"
+	SubsystemName  = "subsystem.name"
+	SubsystemError = "exitError"
+
 	// Port forwarding event
 	PortForwardEvent = "port"
 	PortForwardAddr  = "addr"

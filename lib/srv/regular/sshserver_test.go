@@ -121,6 +121,13 @@ func (s *SrvSuite) SetUpTest(c *C) {
 		Access:    s.access,
 	})
 
+	clusterConfig, err := services.NewClusterConfig(services.ClusterConfigSpecV3{
+		SessionRecording: services.RecordAtNode,
+	})
+	c.Assert(err, IsNil)
+	err = s.a.SetClusterConfig(clusterConfig)
+	c.Assert(err, IsNil)
+
 	// set cluster name
 	clusterName, err := services.NewClusterName(services.ClusterNameSpecV2{
 		ClusterName: s.domainName,
@@ -965,12 +972,6 @@ func (s *SrvSuite) TestServerAliveInterval(c *C) {
 // TestGlobalRequestRecordingProxy simulates sending a global out-of-band
 // recording-proxy@teleport.com request.
 func (s *SrvSuite) TestGlobalRequestRecordingProxy(c *C) {
-	// send request, since no cluster config is set, we should reply false to
-	// this request
-	ok, _, err := s.clt.SendRequest(teleport.RecordingProxyReqType, true, nil)
-	c.Assert(err, IsNil)
-	c.Assert(ok, Equals, false)
-
 	// set cluster config to record at the node
 	clusterConfig, err := services.NewClusterConfig(services.ClusterConfigSpecV3{
 		SessionRecording: services.RecordAtNode,
