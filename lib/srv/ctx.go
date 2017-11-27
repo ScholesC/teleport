@@ -290,6 +290,7 @@ func (c *ServerContext) takeClosers() []io.Closer {
 	// this is done to avoid any operation holding the lock for too long
 	c.Lock()
 	defer c.Unlock()
+
 	closers := []io.Closer{}
 	if c.term != nil {
 		closers = append(closers, c.term)

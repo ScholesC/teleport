@@ -334,11 +334,16 @@ func (s *Server) handleDirectTCPIPRequest(sconn *ssh.ServerConn, ch ssh.Channel,
 	ctx.AddCloser(ch)
 	ctx.AddCloser(s.serverConn)
 	ctx.AddCloser(s.clientConn)
-	ctx.AddCloser(s.remoteClient)
 	ctx.AddCloser(s.remoteSession)
+	ctx.AddCloser(s.remoteClient)
 
-	defer ctx.Debugf("direct-tcp closed")
-	defer ctx.Close()
+	defer ctx.Debugf("Closed direct-tcp context")
+	defer func() {
+		err := ctx.Close()
+		if err != nil {
+			ctx.Debugf("Error while closing context: %v", err)
+		}
+	}()
 
 	addr := fmt.Sprintf("%v:%d", req.Host, req.Port)
 	ctx.Infof("direct-tcpip channel: %#v to --> %v", req, addr)
@@ -400,10 +405,16 @@ func (s *Server) handleSessionRequests(sconn *ssh.ServerConn, ch ssh.Channel, in
 	ctx.AddCloser(ch)
 	ctx.AddCloser(s.serverConn)
 	ctx.AddCloser(s.clientConn)
-	ctx.AddCloser(s.remoteClient)
 	ctx.AddCloser(s.remoteSession)
+	ctx.AddCloser(s.remoteClient)
 
-	defer ctx.Close()
+	defer s.log.Debugf("Closed session context")
+	defer func() {
+		err := ctx.Close()
+		if err != nil {
+			s.log.Debugf("Error while closing session context: %v", err)
+		}
+	}()
 
 	for {
 		// update ctx with the session ID:
