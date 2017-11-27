@@ -26,6 +26,7 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 
 	"github.com/gravitational/teleport/lib/auth"
+	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/events"
 	rsession "github.com/gravitational/teleport/lib/session"
 	"github.com/gravitational/teleport/lib/sshutils"
@@ -325,6 +326,30 @@ func (c *ServerContext) SendSubsystemResult(r SubsystemResult) {
 	default:
 		c.Infof("blocked on sending subsystem result")
 	}
+}
+
+// ProxyPublicAddress tries to get the public address from the first
+// available proxy. if public_address is not set, fall back to the hostname
+// of the first proxy we get back.
+func (c *ServerContext) ProxyPublicAddress() string {
+	proxyHost := "<proxyhost>:3080"
+
+	if c.srv != nil {
+		proxies, err := c.srv.GetAccessPoint().GetProxies()
+		if err != nil {
+			c.Errorf("Unable to retrieve proxy list: %v", err)
+		}
+
+		if len(proxies) > 0 {
+			proxyHost = proxies[0].GetPublicAddr()
+			if proxyHost == "" {
+				proxyHost = fmt.Sprintf("%v:%v", proxies[0].GetHostname(), defaults.HTTPListenPort)
+				c.Debugf("public_address not set for proxy, returning proxyHost: %q", proxyHost)
+			}
+		}
+	}
+
+	return proxyHost
 }
 
 func (c *ServerContext) String() string {

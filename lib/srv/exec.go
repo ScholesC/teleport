@@ -32,7 +32,6 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/gravitational/teleport"
-	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/events"
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/shell"
@@ -253,24 +252,6 @@ func prepareCommand(ctx *ServerContext) (*exec.Cmd, error) {
 		shell = "/bin/sh"
 	}
 
-	// try and get the public address from the first available proxy. if public_address
-	// is not set, fall back to the hostname of the first proxy we get back.
-	proxyHost := "<proxyhost>:3080"
-	if ctx.srv != nil {
-		proxies, err := ctx.srv.GetAccessPoint().GetProxies()
-		if err != nil {
-			log.Errorf("Unexpected response from authService.GetProxies(): %v", err)
-		}
-
-		if len(proxies) > 0 {
-			proxyHost = proxies[0].GetPublicAddr()
-			if proxyHost == "" {
-				proxyHost = fmt.Sprintf("%v:%v", proxies[0].GetHostname(), defaults.HTTPListenPort)
-				log.Debugf("public_address not set for proxy, returning proxyHost: %q", proxyHost)
-			}
-		}
-	}
-
 	// by default, execute command using user's shell like openssh does:
 	// https://github.com/openssh/openssh-portable/blob/master/session.c
 	c := exec.Command(shell, "-c", ctx.ExecRequest.GetCommand())
@@ -287,7 +268,7 @@ func prepareCommand(ctx *ServerContext) (*exec.Cmd, error) {
 		"USER=" + osUserName,
 		"SHELL=" + shell,
 		teleport.SSHTeleportUser + "=" + ctx.TeleportUser,
-		teleport.SSHSessionWebproxyAddr + "=" + proxyHost,
+		teleport.SSHSessionWebproxyAddr + "=" + ctx.ProxyPublicAddress(),
 		teleport.SSHTeleportHostUUID + "=" + ctx.srv.ID(),
 		teleport.SSHTeleportClusterName + "=" + clusterName,
 	}

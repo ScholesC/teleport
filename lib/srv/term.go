@@ -467,8 +467,8 @@ func (t *remoteTerminal) windowChange(w int, h int) error {
 // prepareRemoteSession prepares the more session for execution.
 func (t *remoteTerminal) prepareRemoteSession(session *ssh.Session, ctx *ServerContext) {
 	envs := map[string]string{
-		teleport.SSHTeleportUser: ctx.TeleportUser,
-		//teleport.SSHSessionWebproxyAddr: proxyHost,
+		teleport.SSHTeleportUser:        ctx.TeleportUser,
+		teleport.SSHSessionWebproxyAddr: ctx.ProxyPublicAddress(),
 		teleport.SSHTeleportHostUUID:    ctx.srv.ID(),
 		teleport.SSHTeleportClusterName: ctx.ClusterName,
 		teleport.SSHSessionID:           string(ctx.session.id),
