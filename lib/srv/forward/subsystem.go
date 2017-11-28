@@ -106,7 +106,7 @@ func (r *remoteSubsystem) Start(ch ssh.Channel) error {
 func (r *remoteSubsystem) Wait() error {
 	var lastErr error
 
-	for i := 0; i < 2; i++ {
+	for i := 0; i < 3; i++ {
 		select {
 		case err := <-r.errorCh:
 			if err != nil && err != io.EOF {
