@@ -230,6 +230,7 @@ func (s *Server) Serve() {
 	}
 
 	// build a remote session to the remote node
+	s.log.Debugf("Creating remote connection to %v@%v", sconn.User(), s.clientConn.RemoteAddr().String())
 	s.remoteClient, s.remoteSession, err = newRemoteSession(s.clientConn.RemoteAddr().String(), sconn.User(), s.agent, s.authHandlers)
 	if err != nil {
 		defer s.serverConn.Close()
@@ -304,18 +305,18 @@ func (s *Server) handleChannel(sconn *ssh.ServerConn, nch ssh.NewChannel) {
 	case "session": // interactive sessions
 		ch, requests, err := nch.Accept()
 		if err != nil {
-			s.log.Infof("could not accept channel (%s)", err)
+			s.log.Infof("Unable to accept channel: %v", err)
 		}
 		go s.handleSessionRequests(sconn, ch, requests)
 	case "direct-tcpip": //port forwarding
 		req, err := sshutils.ParseDirectTCPIPReq(nch.ExtraData())
 		if err != nil {
-			s.log.Errorf("failed to parse request data: %v, err: %v", string(nch.ExtraData()), err)
+			s.log.Errorf("Failed to parse request data: %v, err: %v", string(nch.ExtraData()), err)
 			nch.Reject(ssh.UnknownChannelType, "failed to parse direct-tcpip request")
 		}
 		ch, _, err := nch.Accept()
 		if err != nil {
-			s.log.Infof("could not accept channel (%s)", err)
+			s.log.Infof("Unable to accept channel: %v", err)
 		}
 		go s.handleDirectTCPIPRequest(sconn, ch, req)
 	default:
@@ -349,7 +350,7 @@ func (s *Server) handleDirectTCPIPRequest(sconn *ssh.ServerConn, ch ssh.Channel,
 	ctx.Infof("direct-tcpip channel: %#v to --> %v", req, addr)
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
-		ctx.Infof("failed connecting to: %v, err: %v", addr, err)
+		ctx.Infof("Failed connecting to: %v, err: %v", addr, err)
 		return
 	}
 	defer conn.Close()
@@ -407,6 +408,7 @@ func (s *Server) handleSessionRequests(sconn *ssh.ServerConn, ch ssh.Channel, in
 	ctx.AddCloser(s.clientConn)
 	ctx.AddCloser(s.remoteSession)
 	ctx.AddCloser(s.remoteClient)
+	ctx.AddCloser(sconn)
 
 	defer s.log.Debugf("Closed session context")
 	defer func() {
@@ -427,7 +429,7 @@ func (s *Server) handleSessionRequests(sconn *ssh.ServerConn, ch ssh.Channel, in
 			ch.Stderr().Write([]byte(errorMessage))
 			_, err := ch.SendRequest("exit-status", false, ssh.Marshal(struct{ C uint32 }{C: teleport.RemoteCommandFailure}))
 			if err != nil {
-				ctx.Errorf("failed to send exit status %v", errorMessage)
+				ctx.Errorf("Failed to send exit status %v", errorMessage)
 			}
 			return
 		}
@@ -458,7 +460,7 @@ func (s *Server) handleSessionRequests(sconn *ssh.ServerConn, ch ssh.Channel, in
 			// we send it back and close the session
 			_, err := ch.SendRequest("exit-status", false, ssh.Marshal(struct{ C uint32 }{C: uint32(result.Code)}))
 			if err != nil {
-				ctx.Infof("%v failed to send exit status: %v", result.Command, err)
+				ctx.Infof("Failed to send exit status for %v: %v", result.Command, err)
 			}
 			return
 		}

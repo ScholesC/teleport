@@ -137,7 +137,7 @@ func (h *AuthHandlers) UserKeyAuth(conn ssh.ConnMetadata, key ssh.PublicKey) (*s
 		recordFailedLogin(err)
 		return nil, trace.Wrap(err)
 	}
-	h.Debugf("successfully authenticated")
+	h.Debugf("Successfully authenticated")
 
 	// see if the host user is valid (no need to do this in proxy mode)
 	if !h.isProxy() {

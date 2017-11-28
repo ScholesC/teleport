@@ -405,13 +405,14 @@ func (t *remoteTerminal) TTY() *os.File {
 }
 
 func (t *remoteTerminal) Close() error {
-	// wait until all participants are done copying
-	t.wg.Wait()
-
+	// this closes the underlying stdin,stdout,stderr which is what ptyBuffer is
+	// hooked to directly
 	err := t.session.Close()
 	if err != nil {
 		return trace.Wrap(err)
 	}
+
+	t.log.Debugf("Closed remote terminal and underlying SSH session")
 
 	return nil
 }

@@ -149,6 +149,7 @@ func (s *SessionRegistry) leaveSession(party *party) error {
 	// allowing parties to reconnect if they lost connection momentarily
 	lingerAndDie := func() {
 		lingerTTL := sess.GetLingerTTL()
+
 		if lingerTTL > 0 {
 			time.Sleep(lingerTTL)
 		}
